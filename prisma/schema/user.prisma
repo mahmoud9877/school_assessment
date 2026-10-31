@@ -1,0 +1,18 @@
+enum UserRole {
+  STUDENT
+  TEACHER
+  ADMIN
+  OPERATOR
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  role      UserRole @default(STUDENT)
+  email     String   @unique
+  password  String
+  teacher   Teacher?
+  student   Student?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

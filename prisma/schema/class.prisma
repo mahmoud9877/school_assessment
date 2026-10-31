@@ -1,0 +1,10 @@
+model Class {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  capacity  Int
+  teacherId Int
+  teacher   Teacher   @relation(fields: [teacherId], references: [id])
+  students  Student[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
