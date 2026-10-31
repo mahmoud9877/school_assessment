@@ -37,7 +37,7 @@ import { UpdateClassDto } from './dto/update-class.dto.js';
 @Auth()
 @Controller('classes')
 export class ClassesController {
-  constructor(private readonly classesService: ClassesService) { }
+  constructor(private readonly classesService: ClassesService) {}
 
   @ApiBadRequestResponse({
     description: 'Invalid input',

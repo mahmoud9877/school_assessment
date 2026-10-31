@@ -4,15 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { ClassCheck } from '../classes/classes.repository.js';
 import { UserRole } from '../generated/prisma/enums.js';
 import { UsersRepository } from '../users/users.repository.js';
 import { CreateStudentDto } from './dto/create-student.dto.js';
 import { UpdateStudentDto } from './dto/update-student.dto.js';
 import { StudentsRepository } from './students.repository.js';
-
-type SeatRefusal =
-  | { status: 'class_not_found' }
-  | { status: 'class_full'; capacity: number };
 
 @Injectable()
 export class StudentsService {
@@ -35,11 +32,10 @@ export class StudentsService {
       throw new ConflictException(`User #${userId} is already a student`);
     }
 
-    const result = await this.students.enrol({ userId, classId });
-    if (result.status !== 'ok') {
-      this.throwSeatRefusal(classId, result);
-    }
-    return result.student;
+    return this.students.enrol(
+      { userId, classId },
+      this.assertSeatAvailable(classId),
+    );
   }
 
   findAll() {
@@ -60,11 +56,11 @@ export class StudentsService {
       return student;
     }
 
-    const result = await this.students.moveToClass(id, classId);
-    if (result.status !== 'ok') {
-      this.throwSeatRefusal(classId, result);
-    }
-    return result.student;
+    return this.students.moveToClass(
+      id,
+      classId,
+      this.assertSeatAvailable(classId),
+    );
   }
 
   async remove(id: number) {
@@ -72,12 +68,17 @@ export class StudentsService {
     await this.students.delete(id);
   }
 
-  private throwSeatRefusal(classId: number, refusal: SeatRefusal): never {
-    if (refusal.status === 'class_not_found') {
-      throw new NotFoundException(`Class #${classId} not found`);
-    }
-    throw new ConflictException(
-      `Class #${classId} is full (capacity ${refusal.capacity})`,
-    );
+  // Runs with the class row locked, so two requests cannot take the last seat.
+  private assertSeatAvailable(classId: number): ClassCheck {
+    return (target) => {
+      if (!target) {
+        throw new NotFoundException(`Class #${classId} not found`);
+      }
+      if (target.enrolled >= target.capacity) {
+        throw new ConflictException(
+          `Class #${classId} is full (capacity ${target.capacity})`,
+        );
+      }
+    };
   }
 }

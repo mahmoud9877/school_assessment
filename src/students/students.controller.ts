@@ -34,7 +34,7 @@ import { StudentsService } from './students.service.js';
 @Auth()
 @Controller('students')
 export class StudentsController {
-  constructor(private readonly studentsService: StudentsService) { }
+  constructor(private readonly studentsService: StudentsService) {}
 
   @ApiBadRequestResponse({
     description: 'Invalid input',

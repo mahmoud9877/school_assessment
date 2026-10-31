@@ -1,23 +1,33 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import type { TeachersRepository } from '../teachers/teachers.repository.js';
-import type { ClassesRepository } from './classes.repository.js';
+import type {
+  ClassCheck,
+  ClassesRepository,
+  ClassSeats,
+} from './classes.repository.js';
 import { ClassesService } from './classes.service.js';
 
 describe('ClassesService', () => {
   let classes: Record<string, ReturnType<typeof vi.fn>>;
   let teachers: Record<string, ReturnType<typeof vi.fn>>;
   let service: ClassesService;
+  // What the repository finds with the class row locked.
+  let current: ClassSeats | null;
 
   beforeEach(() => {
+    current = { id: 1, name: 'Art', capacity: 10, enrolled: 4 };
     classes = {
       findById: vi.fn(),
       existsByName: vi.fn().mockResolvedValue(false),
       create: vi.fn().mockImplementation((data) => ({ id: 1, ...data })),
-      update: vi.fn().mockImplementation((id, data) => ({
-        status: 'ok',
-        class: { id, ...data },
-      })),
-      deleteIfEmpty: vi.fn().mockResolvedValue({ status: 'ok' }),
+      update: vi.fn((id: number, data: object, check: ClassCheck) => {
+        check(current);
+        return Promise.resolve({ id, ...data });
+      }),
+      delete: vi.fn((_id: number, check: ClassCheck) => {
+        check(current);
+        return Promise.resolve();
+      }),
     };
     teachers = { findById: vi.fn().mockResolvedValue({ id: 2 }) };
     service = new ClassesService(
@@ -52,19 +62,14 @@ describe('ClassesService', () => {
   });
 
   describe('update', () => {
-    it('returns the updated class', async () => {
+    it('allows lowering capacity down to the current enrolment', async () => {
       await expect(service.update(1, { capacity: 4 })).resolves.toEqual({
         id: 1,
         capacity: 4,
       });
-      expect(classes.update).toHaveBeenCalledWith(1, { capacity: 4 });
     });
 
     it('rejects capacity below the current enrolment', async () => {
-      classes.update.mockResolvedValue({
-        status: 'below_enrolment',
-        enrolled: 4,
-      });
       await expect(service.update(1, { capacity: 3 })).rejects.toThrow(
         new ConflictException(
           'Capacity 3 is below the 4 students already enrolled',
@@ -81,7 +86,7 @@ describe('ClassesService', () => {
     });
 
     it('rejects an unknown class', async () => {
-      classes.update.mockResolvedValue({ status: 'not_found' });
+      current = null;
       await expect(service.update(1, { name: 'X' })).rejects.toThrow(
         NotFoundException,
       );
@@ -90,21 +95,18 @@ describe('ClassesService', () => {
 
   describe('remove', () => {
     it('refuses to delete a class that still has students', async () => {
-      classes.deleteIfEmpty.mockResolvedValue({
-        status: 'has_students',
-        enrolled: 4,
-      });
       await expect(service.remove(1)).rejects.toThrow(ConflictException);
     });
 
     it('rejects an unknown class', async () => {
-      classes.deleteIfEmpty.mockResolvedValue({ status: 'not_found' });
+      current = null;
       await expect(service.remove(1)).rejects.toThrow(NotFoundException);
     });
 
     it('deletes an empty class', async () => {
-      await service.remove(1);
-      expect(classes.deleteIfEmpty).toHaveBeenCalledWith(1);
+      current = { id: 1, name: 'Art', capacity: 10, enrolled: 0 };
+      await expect(service.remove(1)).resolves.toBeUndefined();
+      expect(classes.delete).toHaveBeenCalledWith(1, expect.any(Function));
     });
   });
 

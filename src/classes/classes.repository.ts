@@ -18,6 +18,13 @@ const classDetailInclude = {
 
 export type LockedClass = { id: number; name: string; capacity: number };
 
+// A locked class with its current enrolment, handed to the service's check.
+export type ClassSeats = LockedClass & { enrolled: number };
+
+// Called inside the transaction, before the write, with the class row locked
+// (null if it does not exist). Throwing rolls the transaction back.
+export type ClassCheck = (current: ClassSeats | null) => void;
+
 // Replaces Prisma's `_count` with a flat `studentCount` field.
 function withStudentCount<T extends { _count: { students: number } }>({
   _count,
@@ -28,7 +35,7 @@ function withStudentCount<T extends { _count: { students: number } }>({
 
 // Locks the class row until the transaction ends, so concurrent enrolments
 // into the same class are serialised and cannot exceed its capacity.
-export async function lockClassById(tx: Tx, id: number) {
+async function lockClassById(tx: Tx, id: number) {
   const rows = await tx.$queryRaw<LockedClass[]>`
     SELECT "id", "name", "capacity" FROM "Class" WHERE "id" = ${id} FOR UPDATE`;
   return rows[0] ?? null;
@@ -52,8 +59,18 @@ export async function countStudentsByClass(tx: Tx, classIds: number[]) {
   return new Map(groups.map((g) => [g.classId, g._count._all]));
 }
 
-export function countStudentsInClass(tx: Tx, classId: number) {
-  return tx.student.count({ where: { classId } });
+// Locks the class row and counts its students. The row stays locked until
+// the transaction ends, so the count cannot change before the caller writes.
+export async function lockClassSeats(
+  tx: Tx,
+  id: number,
+): Promise<ClassSeats | null> {
+  const locked = await lockClassById(tx, id);
+  if (!locked) {
+    return null;
+  }
+  const enrolled = await tx.student.count({ where: { classId: id } });
+  return { ...locked, enrolled };
 }
 
 @Injectable()
@@ -106,41 +123,27 @@ export class ClassesRepository {
     await this.prisma.class.createMany({ data });
   }
 
-  // Updates the class with its row locked, so a capacity change cannot race
-  // with enrolments into it.
-  update(id: number, data: Prisma.ClassUncheckedUpdateInput) {
+  // Runs `check` with the class row locked, then updates it, so a capacity
+  // change cannot race with enrolments into the class.
+  update(
+    id: number,
+    data: Prisma.ClassUncheckedUpdateInput,
+    check: ClassCheck,
+  ) {
     return this.prisma.$transaction(async (tx) => {
-      if (!(await lockClassById(tx, id))) {
-        return { status: 'not_found' as const };
-      }
-      if (typeof data.capacity === 'number') {
-        const enrolled = await countStudentsInClass(tx, id);
-        if (data.capacity < enrolled) {
-          return { status: 'below_enrolment' as const, enrolled };
-        }
-      }
-      const updated = await tx.class.update({
-        where: { id },
-        data,
-        include: classInclude,
-      });
-      return { status: 'ok' as const, class: withStudentCount(updated) };
+      check(await lockClassSeats(tx, id));
+      return withStudentCount(
+        await tx.class.update({ where: { id }, data, include: classInclude }),
+      );
     });
   }
 
-  // Deletes the class only while it has no students, with its row locked so
-  // nobody can enrol in between.
-  deleteIfEmpty(id: number) {
+  // Runs `check` with the class row locked, then deletes it, so nobody can
+  // enrol in between.
+  delete(id: number, check: ClassCheck) {
     return this.prisma.$transaction(async (tx) => {
-      if (!(await lockClassById(tx, id))) {
-        return { status: 'not_found' as const };
-      }
-      const enrolled = await countStudentsInClass(tx, id);
-      if (enrolled > 0) {
-        return { status: 'has_students' as const, enrolled };
-      }
+      check(await lockClassSeats(tx, id));
       await tx.class.delete({ where: { id } });
-      return { status: 'ok' as const };
     });
   }
 }

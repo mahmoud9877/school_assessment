@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import {
+  type ClassCheck,
   countStudentsByClass,
-  countStudentsInClass,
   type LockedClass,
-  lockClassById,
   lockClassesByNames,
+  lockClassSeats,
 } from '../classes/classes.repository.js';
 import { Prisma } from '../generated/prisma/client.js';
-import { PrismaService, type Tx } from '../prisma/prisma.service.js';
+import { PrismaService } from '../prisma/prisma.service.js';
 import { userSummarySelect } from '../users/users.repository.js';
 
 const studentInclude = {
@@ -23,21 +23,6 @@ export type EnrolmentCheck = (
   classes: Map<string, LockedClass>,
   enrolled: Map<number, number>,
 ) => void;
-
-// Locks the class and checks it has a free seat. Must run inside the
-// transaction that then adds the student: the row stays locked until it
-// commits, so two requests cannot take the last seat.
-async function reserveSeat(tx: Tx, classId: number) {
-  const target = await lockClassById(tx, classId);
-  if (!target) {
-    return { status: 'class_not_found' as const };
-  }
-  const enrolled = await countStudentsInClass(tx, classId);
-  if (enrolled >= target.capacity) {
-    return { status: 'class_full' as const, capacity: target.capacity };
-  }
-  return null;
-}
 
 @Injectable()
 export class StudentsRepository {
@@ -63,34 +48,24 @@ export class StudentsRepository {
       .then((count) => count > 0);
   }
 
-  // Creates the student only if the class has a free seat.
-  enrol(data: Prisma.StudentUncheckedCreateInput) {
+  // Runs `check` with the target class locked, then creates the student. The
+  // lock is held until commit, so two requests cannot take the last seat.
+  enrol(data: Prisma.StudentUncheckedCreateInput, check: ClassCheck) {
     return this.prisma.$transaction(async (tx) => {
-      const refused = await reserveSeat(tx, data.classId);
-      if (refused) {
-        return refused;
-      }
-      const student = await tx.student.create({
-        data,
-        include: studentInclude,
-      });
-      return { status: 'ok' as const, student };
+      check(await lockClassSeats(tx, data.classId));
+      return tx.student.create({ data, include: studentInclude });
     });
   }
 
-  // Moves the student only if the target class has a free seat.
-  moveToClass(id: number, classId: number) {
+  // Runs `check` with the target class locked, then moves the student.
+  moveToClass(id: number, classId: number, check: ClassCheck) {
     return this.prisma.$transaction(async (tx) => {
-      const refused = await reserveSeat(tx, classId);
-      if (refused) {
-        return refused;
-      }
-      const student = await tx.student.update({
+      check(await lockClassSeats(tx, classId));
+      return tx.student.update({
         where: { id },
         data: { classId },
         include: studentInclude,
       });
-      return { status: 'ok' as const, student };
     });
   }
 

@@ -14,7 +14,7 @@ export const userSummarySelect = {
 
 @Injectable()
 export class UsersRepository {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService) {}
 
   findAll() {
     return this.prisma.user.findMany({
@@ -24,7 +24,10 @@ export class UsersRepository {
   }
 
   findById(id: number) {
-    return this.prisma.user.findUnique({ where: { id }, omit: { password: true } });
+    return this.prisma.user.findUnique({
+      where: { id },
+      omit: { password: true },
+    });
   }
 
   // Includes the password hash: for credential checks only, never return it.

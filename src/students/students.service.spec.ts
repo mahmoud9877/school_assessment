@@ -3,6 +3,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
+import type { ClassCheck, ClassSeats } from '../classes/classes.repository.js';
 import { UserRole } from '../generated/prisma/enums.js';
 import type { UsersRepository } from '../users/users.repository.js';
 import type { StudentsRepository } from './students.repository.js';
@@ -12,19 +13,22 @@ describe('StudentsService', () => {
   let students: Record<string, ReturnType<typeof vi.fn>>;
   let users: Record<string, ReturnType<typeof vi.fn>>;
   let service: StudentsService;
+  // What the repository finds with the target class row locked.
+  let target: ClassSeats | null;
 
   beforeEach(() => {
+    target = { id: 1, name: 'Math', capacity: 2, enrolled: 1 };
     students = {
       findById: vi.fn(),
       existsForUser: vi.fn().mockResolvedValue(false),
-      enrol: vi.fn().mockImplementation((data) => ({
-        status: 'ok',
-        student: { id: 1, ...data },
-      })),
-      moveToClass: vi.fn().mockImplementation((id, classId) => ({
-        status: 'ok',
-        student: { id, classId },
-      })),
+      enrol: vi.fn((data: object, check: ClassCheck) => {
+        check(target);
+        return Promise.resolve({ id: 1, ...data });
+      }),
+      moveToClass: vi.fn((id: number, classId: number, check: ClassCheck) => {
+        check(target);
+        return Promise.resolve({ id, classId });
+      }),
       delete: vi.fn(),
     };
     users = {
@@ -41,18 +45,18 @@ describe('StudentsService', () => {
 
     it('enrols a STUDENT user into a class', async () => {
       await expect(service.create(dto)).resolves.toMatchObject(dto);
-      expect(students.enrol).toHaveBeenCalledWith(dto);
+      expect(students.enrol).toHaveBeenCalledWith(dto, expect.any(Function));
     });
 
     it('rejects enrolment when the class is full', async () => {
-      students.enrol.mockResolvedValue({ status: 'class_full', capacity: 2 });
+      target = { id: 1, name: 'Math', capacity: 2, enrolled: 2 };
       await expect(service.create(dto)).rejects.toThrow(
         new ConflictException('Class #1 is full (capacity 2)'),
       );
     });
 
     it('rejects an unknown class', async () => {
-      students.enrol.mockResolvedValue({ status: 'class_not_found' });
+      target = null;
       await expect(service.create(dto)).rejects.toThrow(
         new NotFoundException('Class #1 not found'),
       );
@@ -89,14 +93,15 @@ describe('StudentsService', () => {
         id: 3,
         classId: 2,
       });
-      expect(students.moveToClass).toHaveBeenCalledWith(3, 2);
+      expect(students.moveToClass).toHaveBeenCalledWith(
+        3,
+        2,
+        expect.any(Function),
+      );
     });
 
     it('rejects moving into a full class', async () => {
-      students.moveToClass.mockResolvedValue({
-        status: 'class_full',
-        capacity: 1,
-      });
+      target = { id: 2, name: 'Art', capacity: 1, enrolled: 1 };
       await expect(service.update(3, { classId: 2 })).rejects.toThrow(
         ConflictException,
       );
